@@ -20,13 +20,13 @@ spec:
   - match:
       - uri:
           prefix: {{ .Values.istio.prefix }}
-    rewrite:
-      uri: {{ .Values.istio.rewrite }}
     route:
     - destination:
         host: {{ template "common.names.fullname" . }}
         port:
           number: {{ .Values.service.port }}
     headers:
-    {{- include "common.tplvalues.render" ( dict "value" .Values.istio.headers "context" $ ) | nindent 6 }}
+      request:
+        set:
+          x-forwarded-proto: https
 {{- end }}

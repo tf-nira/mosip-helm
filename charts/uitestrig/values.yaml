@@ -32,7 +32,6 @@ replicaCount: 1
 service:
   type: ClusterIP
   port: 80
-  containerPort: 8088
   ## loadBalancerIP for the SuiteCRM Service (optional, cloud specific)
   ## ref: http://kubernetes.io/docs/user-guide/services/#type-loadbalancer
   ##
@@ -42,7 +41,6 @@ service:
   ##   http: <to set explicitly, choose port between 30000-32767>
   ##   https: <to set explicitly, choose port between 30000-32767>
   ##
-
   nodePorts:
     http: ""
     https: ""
@@ -53,8 +51,9 @@ service:
 
 image:
   registry: docker.io
-  repository: mosipid/mimoto
-  tag: 0.10.0
+  repository: mosipid/pmptest
+  tag: 1.2.0.1
+
   ## Specify a imagePullPolicy
   ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
   ## ref: http://kubernetes.io/docs/user-guide/images/#pre-pulling-images
@@ -67,51 +66,20 @@ image:
   # pullSecrets:
   #   - myRegistryKeySecretName
 
+## Port on which this particular spring service module is running.
+springServicePort: 8083
+
 ## Configure extra options for liveness and readiness probes
 ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-probes/#configure-probes
 ##
-## TODO: enable probes once health urls are available
-
-startupProbe:
-  enabled: true
-  httpGet:
-    path: /v1/mimoto/actuator/health
-    port: 8088
-  initialDelaySeconds: 0
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 30
-  successThreshold: 1
-
-livenessProbe:
-  enabled: true
-  httpGet:
-    path: /v1/mimoto/actuator/health
-    port: 8088
-  initialDelaySeconds: 120
-  periodSeconds: 30
-  timeoutSeconds: 5
-  failureThreshold: 6
-  successThreshold: 1
-
-readinessProbe:
-  enabled: true
-  httpGet:
-    path: /v1/mimoto/actuator/health
-    port: 8088
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 6
-  successThreshold: 1
 
 ##
 # existingConfigmap:
 
 ## Command and args for running the container (set to default if not set). Use array form
 ##
-command: []
-args: []
+command: ['/bin/bash']
+args: ['-c', "/home/${container_user}/scripts/fetch_docker_image_hash_ids.sh"]
 
 ## Deployment pod host aliases
 ## https://kubernetes.io/docs/concepts/services-networking/add-entries-to-pod-etc-hosts-with-host-aliases/
@@ -126,16 +94,16 @@ resources:
   # resources, such as Minikube. If you do want to specify resources, uncomment the following
   # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
   limits:
-    cpu: 500m
-    memory: 3000Mi
+    cpu: 1000m
+    memory: 3500Mi
   requests:
-    cpu: 100m
-    memory: 1000Mi
+    cpu: 1000m
+    memory: 3500Mi
 
 additionalResources:
   ## Specify any JAVA_OPTS string here. These typically will be specified in conjunction with above resources
   ## Example: java_opts: "-Xms500M -Xmx500M"
-  javaOpts: "-Xms2250M -Xmx2250M"
+  javaOpts: "-Xms3500M -Xmx3500M"
 
 ## ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#set-the-security-context-for-a-container
 ## Clamav container already runs as 'mosip' user, so we may not need to enable this
@@ -242,16 +210,22 @@ updateStrategy:
 ##
 extraEnvVars: []
 
-## ConfigMap with extra environment variables that used
+## ConfigMap with extra environment variables
 ##
 extraEnvVarsCM:
   - global
+  - s3
+  - keycloak-host
+  - db
+  - uitestrig
   - config-server-share
   - artifactory-share
-
 ## Secret with extra environment variables
 ##
-extraEnvVarsSecret: []
+extraEnvVarsSecret:
+  - s3
+  - keycloak-client-secrets
+  - postgres-postgresql
 
 ## Extra volumes to add to the deployment
 ##
@@ -267,11 +241,44 @@ extraVolumeMounts: []
 ##   - name: your-image-name
 ##     image: your-image
 ##     imagePullPolicy: Always
-# true #     ports:
+##     ports:
 ##       - name: portname
 ##         containerPort: 1234
 ##
-initContainers: {}
+initContainers:
+  - command:
+      - /bin/bash
+      - -c
+      - if [ "$ENABLE_INSECURE" = "true" ]; then HOST=$( env | grep "mosip-api-internal-host"
+        |sed "s/mosip-api-internal-host=//g"); if [ -z "$HOST" ]; then echo "HOST
+        $HOST is empty; EXITING"; exit 1; fi; openssl s_client -servername "$HOST"
+        -connect "$HOST":443  > "$HOST.cer" 2>/dev/null & sleep 2 ; sed -i -ne '/-BEGIN
+        CERTIFICATE-/,/-END CERTIFICATE-/p' "$HOST.cer"; cat "$HOST.cer"; /usr/local/openjdk-11/bin/keytool
+        -delete -alias "$HOST" -keystore $JAVA_HOME/lib/security/cacerts  -storepass
+        changeit; /usr/local/openjdk-11/bin/keytool -trustcacerts -keystore "$JAVA_HOME/lib/security/cacerts"
+        -storepass changeit -noprompt -importcert -alias "$HOST" -file "$HOST.cer"
+        ; if [ $? -gt 0 ]; then echo "Failed to add SSL certificate for host $host;
+        EXITING"; exit 1; fi; cp /usr/local/openjdk-11/lib/security/cacerts /cacerts;
+        fi
+    env:
+      - name: ENABLE_INSECURE
+        value: "true"
+    envFrom:
+      - configMapRef:
+          name: global
+      - configMapRef:
+          name: uitestrig
+    image: docker.io/openjdk:11-jre
+    imagePullPolicy: Always
+    name: cacerts
+    resources: {}
+    securityContext:
+      runAsUser: 0
+    terminationMessagePath: /dev/termination-log
+    terminationMessagePolicy: File
+    volumeMounts:
+      - mountPath: /cacerts
+        name: cacerts
 
 ## Add sidecars to the  pods.
 ## Example:
@@ -286,8 +293,7 @@ initContainers: {}
 sidecars: {}
 
 persistence:
-  enabled: false
-  storageClass: longhorn
+  enabled: true
   ## If defined, storageClassName: <storageClass>
   ## If set to "-", storageClassName: "", which disables dynamic provisioning
   ## If undefined (the default) or set to null, no storageClassName spec is
@@ -300,19 +306,10 @@ persistence:
   ## the existingClaim variable
   # existingClaim: your-claim
   ## ReadWriteMany not supported by AWS gp2
-  ## We use EFS storage class as that supports ReadWriteMany. Make sure you have installed the same as given
-  ## here: https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html
-  ## Packet landing zone requires ReadWriteMany
+  storageClass:
   accessModes:
-    - ReadWriteMany
-  size: 1Gi
-  existingClaim:
-  # Dir where all incoming packets are stored
-  # Make sure this matches with what is given in the config properties
-  mountDir: /mnt/landing
-  labels:
-    purpose: landing-folder
-  reclaimPolicy: Retain
+    - ReadWriteOnce
+  size: 100m
 
 ## Init containers parameters:
 ## volumePermissions: Change the owner and group of the persistent volume mountpoint to runAsUser:fsGroup values from the securityContext section.
@@ -360,13 +357,12 @@ serviceAccount:
   ## The name of the ServiceAccount to use.
   ## If not set and create is true, a name is generated using the fullname template
   ##
-  name: mimoto
+  name:
 
 ## Prometheus Metrics
 ##
-## TODO: Enable when prometheus url is available
 metrics:
-  enabled: true
+  enabled: false
   ## Prometheus pod annotations
   ## ref: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
   ##
@@ -420,21 +416,110 @@ metrics:
     #       severity: error
     rules: []
 
-## Requires public access.
+## Admin swagger should have only internal access. Hence linked to internal gateway
 istio:
-  enabled: true
+  enabled: false
   gateways:
     - istio-system/internal
-    - istio-system/public
-  prefix: /residentmobileapp
-  rewrite: /v1/mimoto
-  headers:
-    request:
-      set:
-        x-forwarded-proto: https
-    response:
-      set:
-        Cache-control: no-store
-        Pragma: no-cache
-        Strict-Transport-Security: max-age=31536000; includeSubDomains
-        X-Frame-Options: SAMEORIGIN
+  prefix:
+  corsPolicy:
+    allowOrigins:
+      - prefix: https://api-internal.sandbox.xyz.net
+    allowCredentials: true
+    allowHeaders:
+      - Accept
+      - Accept-Encoding
+      - Accept-Language
+      - Connection
+      - Content-Type
+      - Cookie
+      - Host
+      - Referer
+      - Sec-Fetch-Dest
+      - Sec-Fetch-Mode
+      - Sec-Fetch-Site
+      - Sec-Fetch-User
+      - Origin
+      - Upgrade-Insecure-Requests
+      - User-Agent
+      - sec-ch-ua
+      - sec-ch-ua-mobile
+      - sec-ch-ua-platform
+      - x-xsrf-token
+      - xsrf-token
+    allowMethods:
+      - GET
+      - POST
+      - PATCH
+      - PUT
+      - DELETE
+
+modules:
+  - name: adminui
+    enabled: true
+    image:
+      registry: docker.io
+      repository: mosipid/admintest
+      tag: 1.2.0.1
+  - name: pmpui
+    enabled: true
+    image:
+      registry: docker.io
+      repository: mosipid/pmptest
+      tag: 1.2.0.1
+  - name: residentui
+    enabled: false
+    image:
+      registry: docker.io
+      repository: mosipqa/residenttest
+      tag: 1.2.0.1
+
+crontime: "0 3 * * *"    ## run cronjob every day at 3 AM (time hr: 0-23 )
+
+uitestrig:
+  configmaps:
+    s3:
+      s3-host: 'http://minio.minio:9000'
+      s3-user-key: 'admin'
+      s3-region: ''
+    db:
+      db-port: '5432'
+      db-su-user: 'postgres'
+      db-server: 'api-internal.sandbox.xyz.net'
+    uitestrig:
+      apiInternalEndPoint: 'https://api-internal.sandbox.xyz.net'
+      apiEnvUser: 'api-internal.sandbox.xyz.net'
+      PmpPortalPath: 'https://pmp.sandbox.xyz.net'
+      adminPortalPath: 'https://admin.sandbox.xyz.net'
+      residentPortalPath: 'https://resident.sandbox.xyz.net'
+      CHROME_DRIVER_CPU_LIMIT: "2"
+      CHROME_DRIVER_MEMORY: 3g
+      loginlang: sin
+      push-reports-to-s3: 'yes'
+      s3-account: uitestrig
+    scripts:
+      fetch_docker_image_hash_ids.sh: |
+        #!/bin/bash
+        sleep 5
+        export DOCKER_HASH_ID=$( kubectl get pod "$HOSTNAME" -n "$NS" -o jsonpath='{.status.containerStatuses[*].imageID}' | sed 's/ /\n/g' | grep -v 'istio' | sed 's/docker\-pullable\:\/\///g' )
+        export DOCKER_IMAGE=$( kubectl get pod "$HOSTNAME" -n "$NS" -o jsonpath='{.status.containerStatuses[*].image}' | sed 's/ /\n/g' | grep -v 'istio' | sed 's/docker\-pullable\:\/\///g' )
+        if [[ -z $DOCKER_HASH_ID ]]; then
+        echo "DOCKER_HASH_ID IS EMPTY;EXITING";
+        exit 1;
+        fi
+        echo "DOCKER_HASH_ID ; $DOCKER_HASH_ID"
+        echo "DOCKER_IMAGE : $DOCKER_IMAGE"
+        kubectl get pods -A -o=jsonpath='{range .items[*]}{.metadata.namespace}{","}{.metadata.labels.app\.kubernetes\.io\/name}{","}{.status.containerStatuses[?(@.name!="istio-proxy")].image}{","}{.status.containerStatuses[?(@.name!="istio-proxy")].imageID}{","}{.metadata.creationTimestamp}{"\n"}' | sed 's/ /\n/g' | grep -vE 'istio*|longhorn*|cattle*|rancher|kube' | sed 's/docker\-pullable\:\/\///g' | sort -u | sed '/,,,/d' | awk -F ',' 'BEGIN {print "{ \"POD_NAME\": \"'$(echo $HOSTNAME)'\", \"DOCKER_IMAGE\": \"'$(echo $DOCKER_IMAGE)'\", \"DOCKER_HASH_ID\": \"'$(echo $DOCKER_HASH_ID)'\", \"k8s-cluster-image-list\": ["} {print "{"} {print "\"namespace\": \"" $1 "\","} {print "\"app_name\": \"" $2 "\","} {print "\"docker_image_name\": \"" $3 "\","} {print "\"docker_image_id\": \"" $4 "\","} {print "\"creation_timestamp\": \"" $5 "\"" } {print "},"} END {print "]}"}' | sed -z 's/},\n]/}\n]/g' | jq -r . | tee -a images-list.json
+        ## run entrypoint script
+        sleep 5
+        cd /home/${container_user}/
+        bash ./entrypoint.sh
+  secrets:
+  volumes:
+    configmaps:
+      scripts:
+        defaultMode: 0777
+        volumeMounts:
+          mountPath: '/home/mosip/scripts/'
+
+enable_insecure: false

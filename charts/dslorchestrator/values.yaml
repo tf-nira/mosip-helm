@@ -52,7 +52,7 @@ service:
 image:
   registry: docker.io
   repository: mosipid/dsl-orchestrator
-  tag: 1.2.0.1-B3
+  tag: 1.2.0.1
 
   ## Specify a imagePullPolicy
   ## Defaults to 'Always' if image tag is 'latest', else set to 'IfNotPresent'
@@ -78,8 +78,8 @@ springServicePort: 8083
 
 ## Command and args for running the container (set to default if not set). Use array form
 ##
-command: []
-args: []
+command: ['/bin/bash']
+args: ['-c', "/home/${container_user}/scripts/fetch_docker_image_hash_ids.sh"]
 
 ## Deployment pod host aliases
 ## https://kubernetes.io/docs/concepts/services-networking/add-entries-to-pod-etc-hosts-with-host-aliases/
@@ -249,7 +249,38 @@ extraVolumeMounts: []
 ##       - name: portname
 ##         containerPort: 1234
 ##
-initContainers: {}
+initContainers:
+  - command:
+      - /bin/bash
+      - -c
+      - if [ "$ENABLE_INSECURE" = "true" ]; then HOST=$( env | grep "mosip-api-internal-host"
+        |sed "s/mosip-api-internal-host=//g"); if [ -z "$HOST" ]; then echo "HOST
+        $HOST is empty; EXITING"; exit 1; fi; openssl s_client -servername "$HOST"
+        -connect "$HOST":443  > "$HOST.cer" 2>/dev/null & sleep 2 ; sed -i -ne '/-BEGIN
+        CERTIFICATE-/,/-END CERTIFICATE-/p' "$HOST.cer"; cat "$HOST.cer"; /usr/local/openjdk-11/bin/keytool
+        -delete -alias "$HOST" -keystore $JAVA_HOME/lib/security/cacerts  -storepass
+        changeit; /usr/local/openjdk-11/bin/keytool -trustcacerts -keystore "$JAVA_HOME/lib/security/cacerts"
+        -storepass changeit -noprompt -importcert -alias "$HOST" -file "$HOST.cer"
+        ; if [ $? -gt 0 ]; then echo "Failed to add SSL certificate for host $host;
+        EXITING"; exit 1; fi; cp /usr/local/openjdk-11/lib/security/cacerts /cacerts;
+        fi
+    env:
+      - name: ENABLE_INSECURE
+        value: "true"
+    envFrom:
+      - configMapRef:
+          name: global
+    image: docker.io/openjdk:11-jre
+    imagePullPolicy: Always
+    name: cacerts
+    resources: {}
+    securityContext:
+      runAsUser: 0
+    terminationMessagePath: /dev/termination-log
+    terminationMessagePolicy: File
+    volumeMounts:
+      - mountPath: /cacerts
+        name: cacerts
 
 ## Add sidecars to the  pods.
 ## Example:
@@ -287,7 +318,6 @@ persistence:
     server: ''
   # Dir where config and keys are written inside container
   mountDir: '/home/mosip/mountvolume/scenarios'
-
 
 ## Init containers parameters:
 ## volumePermissions: Change the owner and group of the persistent volume mountpoint to runAsUser:fsGroup values from the securityContext section.
@@ -432,6 +462,11 @@ istio:
       - PUT
       - DELETE
 
+types:
+  - name: full
+    enabled: true
+  - name: sanity
+    enabled: true
 
 crontime: "0 3 * * *"    ## run cronjob every day at 3 AM (time hr: 0-23 )
 
@@ -448,9 +483,6 @@ dslorchestrator:
     dslorchestrator:
       ENABLE_INSECURE: "false"
       ENDPOINT: "https://api-internal.sandbox.xyz.net"
-      LANG_CODE: "eng"
-      # TESTLEVEL: sanity or full
-      TESTLEVEL: "full"
       USER: "api-internal.sandbox.xyz.net"
       authCertsPath: "/home/mosip/authcerts"
       authDemoServiceBaseURL: "http://authdemo.authdemo"
@@ -461,6 +493,38 @@ dslorchestrator:
       mountPathForScenario: "/home/mosip/mountvolume/"
       packetUtilityBaseUrl: https://<server-host>/v1/packetcreator
       s3-account: "dslreports"
-      THREAD_COUNT: '8'
-      push-reports-to-s3: 'yes'
+      threadCount: "8"
+      push-reports-to-s3: "yes"
+      enableDebug: "no"
+      langselect: "0"
+      admin_userName: "test0"
+      useExternalScenarioSheet: "no"
+      servicesNotDeployed: ""
+      scenariosToSkip: ""
+      scenariosToExecute: ""
+    scripts:
+      fetch_docker_image_hash_ids.sh: |
+        #!/bin/bash
+        sleep 5
+        export DOCKER_HASH_ID=$( kubectl get pod "$HOSTNAME" -n "$NS" -o jsonpath='{.status.containerStatuses[*].imageID}' | sed 's/ /\n/g' | grep -v 'istio' | sed 's/docker\-pullable\:\/\///g' )
+        export DOCKER_IMAGE=$( kubectl get pod "$HOSTNAME" -n "$NS" -o jsonpath='{.status.containerStatuses[*].image}' | sed 's/ /\n/g' | grep -v 'istio' | sed 's/docker\-pullable\:\/\///g' )
+        if [[ -z $DOCKER_HASH_ID ]]; then
+        echo "DOCKER_HASH_ID IS EMPTY;EXITING";
+        exit 1;
+        fi
+        echo "DOCKER_HASH_ID ; $DOCKER_HASH_ID"
+        echo "DOCKER_IMAGE : $DOCKER_IMAGE"
+        kubectl get pods -A -o=jsonpath='{range .items[*]}{.metadata.namespace}{","}{.metadata.labels.app\.kubernetes\.io\/name}{","}{.status.containerStatuses[?(@.name!="istio-proxy")].image}{","}{.status.containerStatuses[?(@.name!="istio-proxy")].imageID}{","}{.metadata.creationTimestamp}{"\n"}' | sed 's/ /\n/g' | grep -vE 'istio*|longhorn*|cattle*|rancher|kube' | sed 's/docker\-pullable\:\/\///g' | sort -u | sed '/,,,/d' | awk -F ',' 'BEGIN {print "{ \"POD_NAME\": \"'$(echo $HOSTNAME)'\", \"DOCKER_IMAGE\": \"'$(echo $DOCKER_IMAGE)'\", \"DOCKER_HASH_ID\": \"'$(echo $DOCKER_HASH_ID)'\", \"k8s-cluster-image-list\": ["} {print "{"} {print "\"namespace\": \"" $1 "\","} {print "\"app_name\": \"" $2 "\","} {print "\"docker_image_name\": \"" $3 "\","} {print "\"docker_image_id\": \"" $4 "\","} {print "\"creation_timestamp\": \"" $5 "\"" } {print "},"} END {print "]}"}' | sed -z 's/},\n]/}\n]/g' | jq -r . | tee -a images-list.json
+        ## run entrypoint script
+        sleep 5
+        cd /home/${container_user}/
+        bash ./entrypoint.sh
   secrets:
+  volumes:
+    configmaps:
+      scripts:
+        defaultMode: 0777
+        volumeMounts:
+          mountPath: '/home/mosip/scripts/'
+
+enable_insecure: false

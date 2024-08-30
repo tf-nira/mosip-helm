@@ -21,15 +21,15 @@ spec:
     metadata:
       annotations:
         {{- if or .Values.podAnnotations .Values.metrics.enabled }}
-        {{- include "mimoto.podAnnotations" . | nindent 8 }}
+        {{- include "regproc-group8.podAnnotations" . | nindent 8 }}
         {{- end }}
       labels: {{- include "common.labels.standard" . | nindent 8 }}
         {{- if .Values.podLabels }}
         {{- include "common.tplvalues.render" (dict "value" .Values.podLabels "context" $) | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ template "mimoto.serviceAccountName" . }}
-      {{- include "mimoto.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ template "regproc-group8.serviceAccountName" . }}
+      {{- include "regproc-group8.imagePullSecrets" . | nindent 6 }}
       {{- if .Values.hostAliases }}
       hostAliases: {{- include "common.tplvalues.render" (dict "value" .Values.hostAliases "context" $) | nindent 8 }}
       {{- end }}
@@ -56,7 +56,7 @@ spec:
       initContainers:
         {{- if and .Values.volumePermissions.enabled .Values.persistence.enabled }}
         - name: volume-permissions
-          image: {{ include "mimoto.volumePermissions.image" . }}
+          image: {{ include "regproc-group8.volumePermissions.image" . }}
           imagePullPolicy: {{ .Values.volumePermissions.image.pullPolicy | quote }}
           command:
             - %%commands%%
@@ -73,8 +73,8 @@ spec:
           {{- include "common.tplvalues.render" (dict "value" .Values.initContainers "context" $) | nindent 8 }}
         {{- end }}
       containers:
-        - name: mimoto
-          image: {{ template "mimoto.image" . }}
+        - name: regproc-group8
+          image: {{ template "regproc-group8.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- if .Values.lifecycleHooks }}
           lifecycle: {{- include "common.tplvalues.render" (dict "value" .Values.lifecycleHooks "context" $) | nindent 12 }}
@@ -104,14 +104,9 @@ spec:
             {{- end }}
             {{- end }}
             {{- if .Values.extraEnvVarsSecret }}
-            {{- range .Values.extraEnvVarsSecret }}
             - secretRef:
-                name: {{ . }}
+                name: {{ include "common.tplvalues.render" (dict "value" .Values.extraEnvVarsSecret "context" $) }}
             {{- end }}
-            {{- end }}
-          volumeMounts:
-            - name: landing-folder
-              mountPath: {{ .Values.persistence.mountDir }}
           ports: []
           {{- if .Values.resources }}
           resources: {{- toYaml .Values.resources | nindent 12 }}
@@ -134,11 +129,3 @@ spec:
         {{- if .Values.sidecars }}
         {{- include "common.tplvalues.render" ( dict "value" .Values.sidecars "context" $) | nindent 8 }}
         {{- end }}
-      volumes:
-        - name: landing-folder
-          {{- if .Values.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim | default (include "common.names.fullname" .) }}
-          {{- else }}
-          emptyDir: {}
-          {{ end }}
